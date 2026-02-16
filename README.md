@@ -83,7 +83,10 @@ https://www.biji.com/subject/QYARpjM0/DEFAULT?followId=785142&followName=博主�
 
 ### 第三步：使用 Skill
 
-**在 Claude Code 中（推荐）：**
+> **如果只是提取完整的文案，推荐使用【直接在终端运行】这种方式**
+
+
+**在 Claude Code 中：**
 
 直接用自然语言告诉 Claude：
 
