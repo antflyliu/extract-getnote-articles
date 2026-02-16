@@ -18,3 +18,8 @@ chrome-user-data/
 
 # Claude
 .claude/
+
+
+.cursorindexingignore
+chrome-user-data/
+.specstory/

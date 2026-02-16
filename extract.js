@@ -58,36 +58,65 @@ async function extractArticleContent(page, detailUrl) {
 
     await page.goto(webUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
-    // 智能等待：等待段落出现即可
+    // 等待正文出现
     await page.waitForSelector('p', { timeout: 5000 }).catch(() => {});
+    // 尽量等待原链接渲染完成（不要只等容器出现）
+    await page.waitForFunction(() => {
+      const span = document.querySelector('.web-source-url span');
+      return !!(span && span.textContent && /https?:\/\//.test(span.textContent));
+    }, { timeout: 8000 }).catch(() => {});
 
     const content = await page.evaluate(() => {
-      const paragraphs = Array.from(document.querySelectorAll('p'));
       let title = '';
       let originalLink = '';
       let contentParts = [];
 
-      for (let p of paragraphs) {
+      // 1. 从 div.web-source-url 提取原链接（抖音原始视频链接）
+      //    页面结构: <div class="web-source-url"> 原链接：<span>https://...</span></div>
+      const sourceDiv = document.querySelector('.web-source-url');
+      if (sourceDiv) {
+        console.log('\n\uD83D\uDCCB 抖音视频原链接HTML页面结构获取成功');
+        const span = sourceDiv.querySelector('span');
+        if (span && span.textContent.trim()) {
+          originalLink = span.textContent.replace(/\s+/g, '').trim();
+        } else {
+          const urlMatch = sourceDiv.textContent.replace(/\s+/g, '').match(/https?:\/\/[^\s]+/);
+          if (urlMatch) originalLink = urlMatch[0];
+        }
+        console.log('\n\uD83D\uDCCB 抖音视频原链接: ', originalLink);
+      }
+
+      // 2. 从 <p> 标签提取标题和正文
+      const paragraphs = Array.from(document.querySelectorAll('p'));
+      for (const p of paragraphs) {
         const text = p.textContent.trim();
-        if (text.startsWith('原链接：')) {
-          originalLink = text.replace('原链接：', '');
-        } else if (!title && text.length > 0 && text.length < 200) {
+        if (!text) continue;
+
+        // 跳过"原链接"段落（若 div.web-source-url 未命中，从 <p> 补提）
+        if (/原链接[：:]/.test(text)) {
+          console.log('\n\uD83D\uDCCB 跳过"原链接"段落（若 div.web-source-url 未命中，从 <p> 补提）');
+          if (!originalLink) {
+            const urlMatch = text.replace(/\s+/g, '').match(/https?:\/\/[^\s]+/);
+            if (urlMatch) originalLink = urlMatch[0];
+          }
+          console.log('\n\uD83D\uDCCB 从 <p> 补提取原链接: ', originalLink);
+          continue;
+        }
+
+        if (!title && text.length > 0 && text.length < 200) {
           title = text;
         } else if (text.length > 50) {
-          // 收集所有长度超过50的段落
           contentParts.push(text);
         }
       }
 
-      // 将所有段落合并成完整内容
       const mainContent = contentParts.join('\n\n');
-
       return { title, originalLink, mainContent };
     });
 
     return content;
   } catch (error) {
-    console.error(`      ✗ 提取失败: ${error.message}`);
+    console.error(`      \u2717 提取失败: ${error.message}`);
     return null;
   }
 }
@@ -152,18 +181,18 @@ async function processArticle(context, article, outputDir, globalIndex, startTim
 
   // 检查文件是否已存在（断点续传）
   if (fs.existsSync(filepath)) {
-    console.log(`  [${globalIndex}] ⏭️  ${article.title.substring(0, 40)}... - 已存在，跳过`);
+    console.log(`  [${globalIndex}] \u23ED\uFE0F  ${article.title.substring(0, 40)}... - 已存在，跳过`);
     return { skipped: true, saved: false };
   }
 
   // 检查是否有有效的URL
   if (!article.detailUrl) {
-    console.log(`  [${globalIndex}] ✗ ${article.title.substring(0, 40)}... - 无有效URL`);
+    console.log(`  [${globalIndex}] \u2717 ${article.title.substring(0, 40)}... - 无有效URL`);
     return { skipped: false, saved: false };
   }
 
   try {
-    console.log(`  [${globalIndex}] 🔄 ${article.title.substring(0, 40)}...`);
+    console.log(`  [${globalIndex}] \uD83D\uDD04 ${article.title.substring(0, 40)}...`);
 
     // 为每个文章创建独立的页面
     const page = await context.newPage();
@@ -172,9 +201,11 @@ async function processArticle(context, article, outputDir, globalIndex, startTim
       const content = await extractArticleContent(page, article.detailUrl);
 
       if (content && content.mainContent) {
+        // 原链接：优先用页面提取的原始来源链接，若无则用 Get笔记文章链接
+        const linkToShow = content.originalLink || article.detailUrl || '';
         const markdown = `# ${article.title}
 
-**原链接**: ${content.originalLink || ''}
+**原链接**: ${linkToShow}
 
 ---
 
@@ -187,22 +218,22 @@ ${content.mainContent}
         // 计算并显示实时统计
         const elapsedMinutes = (Date.now() - startTime) / 1000 / 60;
         const avgSpeed = totalSavedRef.count / elapsedMinutes;
-        console.log(`  [${globalIndex}] ✓ ${article.title.substring(0, 40)}... - 已保存 (${avgSpeed.toFixed(1)} 篇/分钟)`);
+        console.log(`  [${globalIndex}] \u2713 ${article.title.substring(0, 40)}... - 已保存 (${avgSpeed.toFixed(1)} 篇/分钟)`);
 
         await page.close();
         return { skipped: false, saved: true };
       } else {
-        console.log(`  [${globalIndex}] ✗ ${article.title.substring(0, 40)}... - 内容为空`);
+        console.log(`  [${globalIndex}] \u2717 ${article.title.substring(0, 40)}... - 内容为空`);
         await page.close();
         return { skipped: false, saved: false };
       }
     } catch (error) {
-      console.error(`  [${globalIndex}] ✗ ${article.title.substring(0, 40)}... - 处理失败: ${error.message}`);
+      console.error(`  [${globalIndex}] \u2717 ${article.title.substring(0, 40)}... - 处理失败: ${error.message}`);
       await page.close();
       return { skipped: false, saved: false };
     }
   } catch (error) {
-    console.error(`  [${globalIndex}] ✗ ${article.title.substring(0, 40)}... - 创建页面失败: ${error.message}`);
+    console.error(`  [${globalIndex}] \u2717 ${article.title.substring(0, 40)}... - 创建页面失败: ${error.message}`);
     return { skipped: false, saved: false };
   }
 }
@@ -271,7 +302,7 @@ async function main() {
   const gracefulShutdown = async () => {
     if (shouldStop) return; // 防止重复调用
     shouldStop = true;
-    console.log('\n\n⚠️  收到停止信号，正在优雅退出...');
+    console.log('\n\n\u26A0\uFE0F  收到停止信号，正在优雅退出...');
     console.log('等待当前批次处理完成...');
   };
 
@@ -319,7 +350,7 @@ async function main() {
         });
 
         if (needsLogin) {
-          console.log('\n⚠️  需要登录！');
+          console.log('\n\u26A0\uFE0F  需要登录！');
           console.log('==================================================');
           console.log('请在打开的浏览器窗口中登录 Get笔记账号');
           console.log('==================================================');
@@ -351,7 +382,7 @@ async function main() {
                   text-align: center;
                   max-width: 500px;
                 ">
-                  <h1 style="color: #667eea; margin-bottom: 20px;">⚠️ 需要登录</h1>
+                  <h1 style="color: #667eea; margin-bottom: 20px;">\u26A0\uFE0F 需要登录</h1>
                   <p style="font-size: 18px; color: #333; margin-bottom: 30px;">
                     请点击下方按钮前往 Get笔记 登录
                   </p>
@@ -385,9 +416,9 @@ async function main() {
 
           try {
             await page.waitForSelector('tbody tr', { timeout: 10000 });
-            console.log('✅ 登录成功，表格已出现');
+            console.log('\u2705 登录成功，表格已出现');
           } catch (e2) {
-            console.log('\n❌ 登录超时或失败');
+            console.log('\n\u274C 登录超时或失败');
             console.log('请确保已在浏览器中完成登录，然后重新运行脚本');
             await context.close();
             process.exit(1);
@@ -421,15 +452,15 @@ async function main() {
       }
 
       // 步骤1：串行获取所有文章的URL
-      console.log('\n📋 步骤1: 获取文章URL...');
+      console.log('\n\uD83D\uDCCB 步骤1: 获取文章URL...');
       const articlesWithUrls = await fetchArticleUrls(page, pageUrl, articles, currentPage);
 
       // 步骤2：并行提取文章内容（分批处理）
-      console.log('\n📝 步骤2: 并行提取内容...');
+      console.log('\n\uD83D\uDCDD 步骤2: 并行提取内容...');
       for (let i = 0; i < articlesWithUrls.length; i += concurrency) {
         // 检查是否收到停止信号
         if (shouldStop) {
-          console.log('\n⏸️  停止提取，保存进度...');
+          console.log('\n\u23F8\uFE0F  停止提取，保存进度...');
           break;
         }
 
